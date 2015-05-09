@@ -2741,9 +2741,11 @@ static void* s3fs_init(struct fuse_conn_info* conn)
   }
 
   // Investigate system capabilities
+  #ifndef __APPLE__
   if((unsigned int)conn->capable & FUSE_CAP_ATOMIC_O_TRUNC){
      conn->want |= FUSE_CAP_ATOMIC_O_TRUNC;
   }
+  #endif
   // cache
   if(is_remove_cache && !FdManager::DeleteCacheDirectory()){
     DPRNINFO("Could not inilialize cache directory.");
@@ -3102,6 +3104,13 @@ static int s3fs_check_service(void)
       LOWSYSLOGPRINT(LOG_ERR, "Could not connect wrong region %s, so retry to connect region %s.", endpoint.c_str(), expectregion.c_str());
       FPRN("Could not connect wrong region %s, so retry to connect region %s.", endpoint.c_str(), expectregion.c_str());
       endpoint = expectregion;
+      if (S3fsCurl::IsSignatureV4()) {
+          if (host == "http://s3.amazonaws.com") {
+              host = "http://s3-" + endpoint + ".amazonaws.com";
+          } else if (host == "https://s3.amazonaws.com") {
+              host = "https://s3-" + endpoint + ".amazonaws.com";
+          }
+      }
 
       // retry to check
       s3fscurl.DestroyCurlHandle();
@@ -3858,7 +3867,7 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
     if(0 == STR2NCMP(arg, "multipart_size=")){
       off_t size = static_cast<off_t>(s3fs_strtoofft(strchr(arg, '=') + sizeof(char)));
       if(!S3fsCurl::SetMultipartSize(size)){
-        fprintf(stderr, "%s: multipart_size option could not be specified over 10(MB)\n", program_name.c_str());
+        fprintf(stderr, "%s: multipart_size option must be at least 10 MB\n", program_name.c_str());
         return -1;
       }
       if(FdManager::GetPageSize() < static_cast<size_t>(S3fsCurl::GetMultipartSize() * S3fsCurl::GetMaxParallelCount())){
@@ -4043,9 +4052,9 @@ int main(int argc, char* argv[])
     exit(EXIT_FAILURE);
   }
 
-  // bucket names cannot contain upper case characters
-  if(lower(bucket) != bucket){
-    fprintf(stderr, "%s: BUCKET %s, upper case characters are not supported\n",
+  // bucket names cannot contain upper case characters in virtual-hosted style
+  if((!pathrequeststyle) && (lower(bucket) != bucket)){
+    fprintf(stderr, "%s: BUCKET %s, name not compatible with virtual-hosted style\n",
       program_name.c_str(), bucket.c_str());
     exit(EXIT_FAILURE);
   }
