@@ -244,6 +244,7 @@ pthread_mutex_t  S3fsCurl::curl_handles_lock;
 pthread_mutex_t  S3fsCurl::curl_share_lock[SHARE_MUTEX_MAX];
 bool             S3fsCurl::is_initglobal_done  = false;
 CURLSH*          S3fsCurl::hCurlShare          = NULL;
+bool             S3fsCurl::is_cert_check       = true; // default
 bool             S3fsCurl::is_dns_cache        = true; // default
 bool             S3fsCurl::is_ssl_session_cache= true; // default
 long             S3fsCurl::connect_timeout     = 300;  // default
@@ -734,6 +735,12 @@ size_t S3fsCurl::DownloadWriteCallback(void* ptr, size_t size, size_t nmemb, voi
   return totalwrite;
 }
 
+bool S3fsCurl::SetCheckCertificate(bool isCertCheck) {
+    bool old = S3fsCurl::is_cert_check;
+    S3fsCurl::is_cert_check = isCertCheck;
+    return old;
+}
+
 bool S3fsCurl::SetDnsCache(bool isCache)
 {
   bool old = S3fsCurl::is_dns_cache;
@@ -1046,14 +1053,14 @@ int S3fsCurl::ParallelMultipartUploadRequest(const char* tpath, headers_t& meta,
 
   // duplicate fd
   if(-1 == (fd2 = dup(fd)) || 0 != lseek(fd2, 0, SEEK_SET)){
-    DPRN("Cloud not duplicate file discriptor(errno=%d)", errno);
+    DPRN("Could not duplicate file descriptor(errno=%d)", errno);
     if(-1 != fd2){
       close(fd2);
     }
     return -errno;
   }
   if(-1 == fstat(fd2, &st)){
-    DPRN("Invalid file discriptor(errno=%d)", errno);
+    DPRN("Invalid file descriptor(errno=%d)", errno);
     close(fd2);
     return -errno;
   }
@@ -1318,6 +1325,11 @@ bool S3fsCurl::ResetHandle(void)
   }
   if((S3fsCurl::is_dns_cache || S3fsCurl::is_ssl_session_cache) && S3fsCurl::hCurlShare){
     curl_easy_setopt(hCurl, CURLOPT_SHARE, S3fsCurl::hCurlShare);
+  }
+  if(!S3fsCurl::is_cert_check) {
+    DPRN("'no_check_certificate' option in effect.")
+    DPRN("The server certificate won't be checked against the available certificate authorities.")
+    curl_easy_setopt(hCurl, CURLOPT_SSL_VERIFYPEER, false);
   }
   if(S3fsCurl::is_verbose){
     curl_easy_setopt(hCurl, CURLOPT_VERBOSE, true);
@@ -3180,14 +3192,14 @@ int S3fsCurl::MultipartUploadRequest(const char* tpath, headers_t& meta, int fd,
 
   // duplicate fd
   if(-1 == (fd2 = dup(fd)) || 0 != lseek(fd2, 0, SEEK_SET)){
-    DPRN("Cloud not duplicate file discriptor(errno=%d)", errno);
+    DPRN("Could not duplicate file descriptor(errno=%d)", errno);
     if(-1 != fd2){
       close(fd2);
     }
     return -errno;
   }
   if(-1 == fstat(fd2, &st)){
-    DPRN("Invalid file discriptor(errno=%d)", errno);
+    DPRN("Invalid file descriptor(errno=%d)", errno);
     close(fd2);
     return -errno;
   }
