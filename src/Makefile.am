@@ -24,7 +24,7 @@ if USE_GNUTLS_NETTLE
   AM_CPPFLAGS += -DUSE_GNUTLS_NETTLE
 endif
 
-s3fs_SOURCES = s3fs.cpp s3fs.h curl.cpp curl.h cache.cpp cache.h string_util.cpp string_util.h s3fs_util.cpp s3fs_util.h fdcache.cpp fdcache.h common_auth.cpp s3fs_auth.h common.h
+s3fs_SOURCES = s3fs.cpp s3fs.h curl.cpp curl.h cache.cpp cache.h string_util.cpp string_util.h s3fs_util.cpp s3fs_util.h fdcache.cpp fdcache.h common_auth.cpp s3fs_auth.h addhead.cpp addhead.h common.h
 if USE_SSL_OPENSSL
   s3fs_SOURCES += openssl_auth.cpp
 endif
@@ -39,6 +39,6 @@ s3fs_LDADD = $(DEPS_LIBS)
 
 noinst_PROGRAMS = test_string_util
 
-test_string_util_SOURCES = string_util.cpp test_string_util.cpp
+test_string_util_SOURCES = string_util.cpp test_string_util.cpp test_util.h
 
 TESTS = test_string_util
