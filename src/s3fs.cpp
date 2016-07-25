@@ -113,6 +113,7 @@ static bool nocopyapi             = false;
 static bool norenameapi           = false;
 static bool nonempty              = false;
 static bool allow_other           = false;
+static bool load_iamrole          = false;
 static uid_t s3fs_uid             = 0;
 static gid_t s3fs_gid             = 0;
 static mode_t s3fs_umask          = 0;
@@ -177,6 +178,7 @@ static int check_passwd_file_perms(void);
 static int read_passwd_file(void);
 static int get_access_keys(void);
 static int set_moutpoint_attribute(struct stat& mpst);
+static int set_bucket(const char* arg);
 static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_args* outargs);
 
 // fuse interface functions
@@ -874,11 +876,32 @@ static int do_create_bucket(void)
 {
   S3FS_PRN_INFO2("/");
 
+  FILE* ptmpfp;
+  int   tmpfd;
+  if(endpoint == "us-east-1"){
+    ptmpfp = NULL;
+    tmpfd = -1;
+  }else{
+    if(NULL == (ptmpfp = tmpfile()) ||
+       -1 == (tmpfd = fileno(ptmpfp)) ||
+       0 >= fprintf(ptmpfp, "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n"
+        "  <LocationConstraint>%s</LocationConstraint>\n"
+        "</CreateBucketConfiguration>", endpoint.c_str()) ||
+       0 != fflush(ptmpfp) ||
+       -1 == fseek(ptmpfp, 0L, SEEK_SET)){
+      S3FS_PRN_ERR("failed to create temporary file. err(%d)", errno);
+      if(ptmpfp){
+        fclose(ptmpfp);
+      }
+      return (0 == errno ? -EIO : -errno);
+    }
+  }
+
   headers_t meta;
 
   S3fsCurl s3fscurl(true);
-  long     res = s3fscurl.PutRequest("/", meta, -1);
-  if(res < 0){    // fd=-1 means for creating zero byte object.
+  long     res = s3fscurl.PutRequest("/", meta, tmpfd);
+  if(res < 0){
     long responseCode = s3fscurl.GetLastResponseCode();
     if((responseCode == 400 || responseCode == 403) && S3fsCurl::IsSignatureV4()){
       S3FS_PRN_ERR("Could not connect, so retry to connect by signature version 2.");
@@ -886,8 +909,11 @@ static int do_create_bucket(void)
 
       // retry to check
       s3fscurl.DestroyCurlHandle();
-      res = s3fscurl.PutRequest("/", meta, -1);
+      res = s3fscurl.PutRequest("/", meta, tmpfd);
     }
+  }
+  if(ptmpfp != NULL){
+    fclose(ptmpfp);
   }
   return res;
 }
@@ -3351,8 +3377,25 @@ static void* s3fs_init(struct fuse_conn_info* conn)
     return NULL;
   }
 
+  // check loading IAM role name
+  if(load_iamrole){
+    // load IAM role name from http://169.254.169.254/latest/meta-data/iam/security-credentials
+    //
+    S3fsCurl s3fscurl;
+    if(!s3fscurl.LoadIAMRoleFromMetaData()){
+      S3FS_PRN_CRIT("could not load IAM role name from meta data.");
+      s3fs_exit_fuseloop(EXIT_FAILURE);
+      return NULL;
+    }
+    S3FS_PRN_INFO("loaded IAM role name = %s", S3fsCurl::GetIAMRole());
+  }
+
   if (create_bucket){
-    do_create_bucket();
+    int result = do_create_bucket();
+    if(result != 0){
+      s3fs_exit_fuseloop(result);
+      return NULL;
+    }
   }
 
   // Check Bucket
@@ -4036,6 +4079,11 @@ static int get_access_keys(void)
      return EXIT_SUCCESS;
   }
 
+  // access key loading is deferred
+  if(load_iamrole){
+     return EXIT_SUCCESS;
+  }
+
   // 1 - keys specified on the command line
   if(S3fsCurl::IsSetAccessKeyId()){
      return EXIT_SUCCESS;
@@ -4148,6 +4196,33 @@ static int set_moutpoint_attribute(struct stat& mpst)
   return false;
 }
 
+//
+// Set bucket and mount_prefix based on passed bucket name.
+//
+static int set_bucket(const char* arg)
+{
+  char *bucket_name = (char*)arg;
+  if(strstr(arg, ":")){
+    bucket = strtok(bucket_name, ":");
+    char* pmount_prefix = strtok(NULL, ":");
+    if(pmount_prefix){
+      if(0 == strlen(pmount_prefix) || '/' != pmount_prefix[0]){
+        S3FS_PRN_EXIT("path(%s) must be prefix \"/\".", pmount_prefix);
+        return -1;
+      }
+      mount_prefix = pmount_prefix;
+      // remove trailing slash
+      if(mount_prefix.at(mount_prefix.size() - 1) == '/'){
+        mount_prefix = mount_prefix.substr(0, mount_prefix.size() - 1);
+      }
+    }
+  }else{
+    bucket = arg;
+  }
+  return 0;
+}
+
+
 // This is repeatedly called by the fuse option parser
 // if the key is equal to FUSE_OPT_KEY_OPT, it's an option passed in prefixed by 
 // '-' or '--' e.g.: -f -d -ousecache=/tmp
@@ -4156,28 +4231,16 @@ static int set_moutpoint_attribute(struct stat& mpst)
 //  or the mountpoint. The bucket name will always come before the mountpoint
 static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_args* outargs)
 {
+  int ret;
   if(key == FUSE_OPT_KEY_NONOPT){
     // the first NONOPT option is the bucket name
     if(bucket.size() == 0){
-      // extract remote mount path
-      char *bucket_name = (char*)arg;
-      if(strstr(arg, ":")){
-        bucket = strtok(bucket_name, ":");
-        char* pmount_prefix = strtok(NULL, ":");
-        if(pmount_prefix){
-          if(0 == strlen(pmount_prefix) || '/' != pmount_prefix[0]){
-            S3FS_PRN_EXIT("path(%s) must be prefix \"/\".", pmount_prefix);
-            return -1;
-          }
-          mount_prefix = pmount_prefix;
-          // remove trailing slash
-          if(mount_prefix.at(mount_prefix.size() - 1) == '/'){
-            mount_prefix = mount_prefix.substr(0, mount_prefix.size() - 1);
-          }
-        }
-      }else{
-        bucket = arg;
+      if ((ret = set_bucket(arg))){
+        return ret;
       }
+      return 0;
+    }
+    else if (!strcmp(arg, "s3fs")) {
       return 0;
     }
 
@@ -4433,6 +4496,7 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
         S3FS_PRN_EXIT("failed to load use_sse custom key file(%s).", ssecfile);
         return -1;
       }
+      return 0;
     }
     if(0 == STR2NCMP(arg, "ssl_verify_hostname=")){
       long sslvh = static_cast<long>(s3fs_strtoofft(strchr(arg, '=') + sizeof(char)));
@@ -4446,10 +4510,19 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
       passwd_file = strchr(arg, '=') + sizeof(char);
       return 0;
     }
-    if(0 == STR2NCMP(arg, "iam_role=")){
-      const char* role = strchr(arg, '=') + sizeof(char);
-      S3fsCurl::SetIAMRole(role);
-      return 0;
+    if(0 == STR2NCMP(arg, "iam_role")){
+      if(0 == strcmp(arg, "iam_role") || 0 == strcmp(arg, "iam_role=auto")){
+        // loading IAM role name in s3fs_init(), because we need to wait initializing curl.
+        //
+        load_iamrole = true;
+        return 0;
+
+      }else if(0 == STR2NCMP(arg, "iam_role=")){
+        const char* role = strchr(arg, '=') + sizeof(char);
+        S3fsCurl::SetIAMRole(role);
+        load_iamrole = false;
+        return 0;
+      }
     }
     if(0 == STR2NCMP(arg, "public_bucket=")){
       off_t pubbucket = s3fs_strtoofft(strchr(arg, '=') + sizeof(char));
@@ -4460,6 +4533,13 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
       }else{
         S3FS_PRN_EXIT("poorly formed argument to option: public_bucket.");
         return -1;
+      }
+      return 0;
+    }
+    if(0 == STR2NCMP(arg, "bucket=")){
+      std::string bname = strchr(arg, '=') + sizeof(char);
+      if ((ret = set_bucket(bname.c_str()))){
+        return ret;
       }
       return 0;
     }
@@ -4597,6 +4677,10 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
     }
     if(0 == strcmp(arg, "use_path_request_style")){
       pathrequeststyle = true;
+      return 0;
+    }
+    if(0 == STR2NCMP(arg, "noua")){
+      S3fsCurl::SetUserAgentFlag(false);
       return 0;
     }
     //
@@ -4787,7 +4871,7 @@ int main(int argc, char* argv[])
     S3FS_PRN_EXIT("specifying both passwd_file and the access keys options is invalid.");
     exit(EXIT_FAILURE);
   }
-  if(!S3fsCurl::IsPublicBucket()){
+  if(!S3fsCurl::IsPublicBucket() && !load_iamrole){
     if(EXIT_SUCCESS != get_access_keys()){
       exit(EXIT_FAILURE);
     }

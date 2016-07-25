@@ -21,6 +21,8 @@
 #ifndef S3FS_CURL_H_
 #define S3FS_CURL_H_
 
+#include <cassert>
+
 //----------------------------------------------
 // Symbols
 //----------------------------------------------
@@ -122,6 +124,35 @@ typedef std::map<CURL*, progress_t> curlprogress_t;
 class S3fsMultiCurl;
 
 //----------------------------------------------
+// class CurlHandlerPool
+//----------------------------------------------
+
+class CurlHandlerPool
+{
+public:
+  CurlHandlerPool(int maxHandlers)
+    : mMaxHandlers(maxHandlers)
+    , mHandlers(NULL)
+    , mIndex(-1)
+  {
+    assert(maxHandlers > 0);
+  }
+
+  bool Init();
+  bool Destroy();
+
+  CURL* GetHandler();
+  void ReturnHandler(CURL* h);
+
+private:
+  int mMaxHandlers;
+
+  pthread_mutex_t mLock;
+  CURL** mHandlers;
+  int mIndex;
+};
+
+//----------------------------------------------
 // class S3fsCurl
 //----------------------------------------------
 typedef std::map<std::string, std::string> iamcredmap_t;
@@ -170,13 +201,16 @@ class S3fsCurl
       REQTYPE_COPYMULTIPOST,
       REQTYPE_MULTILIST,
       REQTYPE_IAMCRED,
-      REQTYPE_ABORTMULTIUPLOAD
+      REQTYPE_ABORTMULTIUPLOAD,
+      REQTYPE_IAMROLE
     };
 
     // class variables
     static pthread_mutex_t  curl_handles_lock;
     static pthread_mutex_t  curl_share_lock[SHARE_MUTEX_MAX];
     static bool             is_initglobal_done;
+    static CurlHandlerPool* sCurlPool;
+    static int              sCurlPoolSize;
     static CURLSH*          hCurlShare;
     static bool             is_cert_check;
     static bool             is_dns_cache;
@@ -205,6 +239,7 @@ class S3fsCurl
     static int              max_parallel_cnt;
     static off_t            multipart_size;
     static bool             is_sigv4;
+    static bool             is_ua;             // User-Agent
 
     // variables
     CURL*                hCurl;
@@ -263,9 +298,12 @@ class S3fsCurl
 
     static bool ParseIAMCredentialResponse(const char* response, iamcredmap_t& keyval);
     static bool SetIAMCredentials(const char* response);
+    static bool ParseIAMRoleFromMetaDataResponse(const char* response, std::string& rolename);
+    static bool SetIAMRoleFromMetaData(const char* response);
     static bool LoadEnvSseCKeys(void);
     static bool LoadEnvSseKmsid(void);
     static bool PushbackSseKeys(std::string& onekey);
+    static bool AddUserAgent(CURL* hCurl);
 
     static int CurlDebugFunc(CURL* hcurl, curl_infotype type, char* data, size_t size, void* userptr);
 
@@ -336,11 +374,14 @@ class S3fsCurl
     static off_t GetMultipartSize(void) { return S3fsCurl::multipart_size; }
     static bool SetSignatureV4(bool isset) { bool bresult = S3fsCurl::is_sigv4; S3fsCurl::is_sigv4 = isset; return bresult; }
     static bool IsSignatureV4(void) { return S3fsCurl::is_sigv4; }
+    static bool SetUserAgentFlag(bool isset) { bool bresult = S3fsCurl::is_ua; S3fsCurl::is_ua = isset; return bresult; }
+    static bool IsUserAgentFlag(void) { return S3fsCurl::is_ua; }
 
     // methods
     bool CreateCurlHandle(bool force = false);
     bool DestroyCurlHandle(void);
 
+    bool LoadIAMRoleFromMetaData(void);
     bool AddSseRequestHead(sse_type_t ssetype, std::string& ssevalue, bool is_only_c, bool is_copy);
     bool GetResponseCode(long& responseCode);
     int RequestPerform(void);

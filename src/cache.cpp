@@ -104,7 +104,9 @@ inline int CompareStatCacheTime(struct timespec& ts1, struct timespec& ts2)
 
 inline bool IsExpireStatCacheTime(const struct timespec& ts, const time_t& expire)
 {
-  return ((ts.tv_sec + expire) < time(NULL));
+  struct timespec nowts;
+  SetStatCacheTime(nowts);
+  return ((ts.tv_sec + expire) < nowts.tv_sec);
 }
 
 //
@@ -494,6 +496,9 @@ bool StatCache::TruncateCache(void)
     for(stat_cache_t::iterator iter = stat_cache.begin(); iter != stat_cache.end(); ){
       stat_cache_entry* entry = iter->second;
       if(!entry || (0L < entry->notruncate && IsExpireStatCacheTime(entry->cache_date, ExpireTime))){
+        if(entry){
+            delete entry;
+        }
         stat_cache.erase(iter++);
       }else{
         ++iter;
@@ -530,6 +535,9 @@ bool StatCache::TruncateCache(void)
     stat_cache_t::iterator siter = *iiter;
 
     S3FS_PRN_DBG("truncate stat cache[path=%s]", siter->first.c_str());
+    if(siter->second){
+        delete siter->second;
+    }
     stat_cache.erase(siter);
   }
   S3FS_MALLOCTRIM(0);

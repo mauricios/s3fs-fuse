@@ -545,6 +545,14 @@ int is_uid_inculde_group(uid_t uid, gid_t gid)
 //-------------------------------------------------------------------
 // safe variant of dirname
 // dirname clobbers path so let it operate on a tmp copy
+string mydirname(const char* path)
+{
+  if(!path || '\0' == path[0]){
+    return string("");
+  }
+  return mydirname(string(path));
+}
+
 string mydirname(string path)
 {
   return string(dirname((char*)path.c_str()));
@@ -552,6 +560,14 @@ string mydirname(string path)
 
 // safe variant of basename
 // basename clobbers path so let it operate on a tmp copy
+string mybasename(const char* path)
+{
+  if(!path || '\0' == path[0]){
+    return string("");
+  }
+  return mybasename(string(path));
+}
+
 string mybasename(string path)
 {
   return string(basename((char*)path.c_str()));
@@ -889,6 +905,17 @@ void show_help (void)
     "\n"
     "Mount an Amazon S3 bucket as a file system.\n"
     "\n"
+    "Usage:\n"
+    "   mounting\n"
+    "     s3fs bucket[:/path] mountpoint [options]\n"
+    "     s3fs mountpoint [options(must specify bucket= option)]\n"
+    "\n"
+    "   umounting\n"
+    "     umount mountpoint\n"
+    "\n"
+    "   utility mode (remove interrupted multipart uploading objects)\n"
+    "     s3fs -u bucket\n"
+    "\n"
     "   General forms for s3fs and FUSE/mount options:\n"
     "      -o opt[,opt...]\n"
     "      -o opt [-o opt] ...\n"
@@ -899,10 +926,14 @@ void show_help (void)
     "\n"
     "             <option_name>=<option_value>\n"
     "\n"
+    "   bucket\n"
+    "      - if it is not specified bucket name(and path) in command line,\n"
+    "        must specify this option after -o option for bucket name.\n"
+    "\n"
     "   default_acl (default=\"private\")\n"
-    "     - the default canned acl to apply to all written s3 objects\n"
-    "          see http://aws.amazon.com/documentation/s3/ for the \n"
-    "          full list of canned acls\n"
+    "      - the default canned acl to apply to all written s3 objects\n"
+    "        see http://aws.amazon.com/documentation/s3/ for the \n"
+    "        full list of canned acls\n"
     "\n"
     "   retries (default=\"2\")\n"
     "      - number of times to retry a failed s3 transaction\n"
@@ -1077,9 +1108,11 @@ void show_help (void)
     "   enable_content_md5 (default is disable)\n"
     "      - ensure data integrity during writes with MD5 hash.\n"
     "\n"
-    "   iam_role (default is no role)\n"
-    "      - set the IAM Role that will supply the credentials from the \n"
-    "      instance meta-data.\n"
+    "   iam_role (default is no IAM role)\n"
+    "      - This option requires the IAM role name or \"auto\". If you specify\n"
+    "      \"auto\", s3fs will automatically use the IAM role names that are set\n"
+    "      to an instance. If you specify this option without any argument, it\n"
+    "      is the same as that you have specified the \"auto\".\n"
     "\n"
     "   noxmlns (disable registering xml name space)\n"
     "        disable registering xml name space for response of \n"
@@ -1108,6 +1141,12 @@ void show_help (void)
     "        Enble compatibility with S3-like APIs which do not support\n"
     "        the virtual-host request style, by using the older path request\n"
     "        style.\n"
+    "\n"
+    "   noua (suppress User-Agent header)\n"
+    "        Usually s3fs outputs of the User-Agent in \"s3fs/<version> (commit\n"
+    "        hash <hash>; <using ssl library name>)\" format.\n"
+    "        If this option is specified, s3fs suppresses the output of the\n"
+    "        User-Agent.\n"
     "\n"
     "   dbglevel (default=\"crit\")\n"
     "        Set the debug message level. set value as crit(critical), err\n"
