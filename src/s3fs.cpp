@@ -34,7 +34,6 @@
 #include <pwd.h>
 #include <grp.h>
 #include <getopt.h>
-#include <sys/xattr.h>
 #include <signal.h>
 
 #include <fstream>
@@ -121,6 +120,7 @@ static bool is_s3fs_uid           = false;// default does not set.
 static bool is_s3fs_gid           = false;// default does not set.
 static bool is_s3fs_umask         = false;// default does not set.
 static bool is_remove_cache       = false;
+static bool is_use_xattr          = false;
 static bool create_bucket         = false;
 static int64_t singlepart_copy_limit = FIVE_GB;
 static bool is_specified_endpoint = false;
@@ -866,6 +866,10 @@ static int s3fs_readlink(const char* path, char* buf, size_t size)
   }
   buf[ressize] = '\0';
 
+  // check buf if it has space words.
+  string strTmp = trim(string(buf));
+  strcpy(buf, strTmp.c_str());
+
   FdManager::get()->Close(ent);
   S3FS_MALLOCTRIM(0);
 
@@ -1172,9 +1176,10 @@ static int s3fs_symlink(const char* from, const char* to)
     S3FS_PRN_ERR("could not open tmpfile(errno=%d)", errno);
     return -errno;
   }
-  // write
-  ssize_t from_size = strlen(from);
-  if(from_size != ent->Write(from, 0, from_size)){
+  // write(without space words)
+  string  strFrom   = trim(string(from));
+  ssize_t from_size = static_cast<ssize_t>(strFrom.length());
+  if(from_size != ent->Write(strFrom.c_str(), 0, from_size)){
     S3FS_PRN_ERR("could not write tmpfile(errno=%d)", errno);
     FdManager::get()->Close(ent);
     return -errno;
@@ -1561,6 +1566,17 @@ static int s3fs_chmod(const char* path, mode_t mode)
       return -EIO;
     }
     StatCache::getStatCacheData()->DelStat(nowcache);
+
+    // check opened file handle.
+    //
+    // If we have already opened file handle, should set mode to it.
+    // And new mode is set when the file handle is closed.
+    //
+    FdEntity* ent;
+    if(NULL != (ent = FdManager::get()->ExistOpen(path))){
+      ent->SetMode(mode);      // Set new mode to opened fd.
+      FdManager::get()->Close(ent);
+    }
   }
   S3FS_MALLOCTRIM(0);
 
@@ -4683,6 +4699,21 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
       S3fsCurl::SetUserAgentFlag(false);
       return 0;
     }
+    if(0 == strcmp(arg, "use_xattr")){
+      is_use_xattr = true;
+      return 0;
+    }else if(0 == STR2NCMP(arg, "use_xattr=")){
+      const char* strflag = strchr(arg, '=') + sizeof(char);
+      if(0 == strcmp(strflag, "1")){
+        is_use_xattr = true;
+      }else if(0 == strcmp(strflag, "0")){
+        is_use_xattr = false;
+      }else{
+        S3FS_PRN_EXIT("option use_xattr has unknown parameter(%s).", strflag);
+        return -1;
+      }
+      return 0;
+    }
     //
     // debug option for s3fs
     //
@@ -4959,10 +4990,12 @@ int main(int argc, char* argv[])
   s3fs_oper.access    = s3fs_access;
   s3fs_oper.create    = s3fs_create;
   // extended attributes
-  s3fs_oper.setxattr    = s3fs_setxattr;
-  s3fs_oper.getxattr    = s3fs_getxattr;
-  s3fs_oper.listxattr   = s3fs_listxattr;
-  s3fs_oper.removexattr = s3fs_removexattr;
+  if(is_use_xattr){
+    s3fs_oper.setxattr    = s3fs_setxattr;
+    s3fs_oper.getxattr    = s3fs_getxattr;
+    s3fs_oper.listxattr   = s3fs_listxattr;
+    s3fs_oper.removexattr = s3fs_removexattr;
+  }
 
   if(!s3fs_init_global_ssl()){
     S3FS_PRN_EXIT("could not initialize for ssl libraries.");
