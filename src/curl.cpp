@@ -58,7 +58,7 @@ static const std::string empty_payload_hash = "e3b0c44298fc1c149afbf4c8996fb9242
 // Utilities
 //-------------------------------------------------------------------
 // [TODO]
-// This function uses tempolary file, but should not use it.
+// This function uses temporary file, but should not use it.
 // For not using it, we implement function in each auth file(openssl, nss. gnutls).
 //
 static bool make_md5_from_string(const char* pstr, string& md5)
@@ -308,7 +308,7 @@ void CurlHandlerPool::ReturnHandler(CURL* h)
 #define MULTIPART_SIZE              10485760          // 10MB
 #define MAX_MULTI_COPY_SOURCE_SIZE  524288000         // 500MB
 
-#define	IAM_EXPIRE_MERGIN           (20 * 60)         // update timming
+#define	IAM_EXPIRE_MERGIN           (20 * 60)         // update timing
 #define	IAM_CRED_URL                "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
 #define IAMCRED_ACCESSKEYID         "AccessKeyId"
 #define IAMCRED_SECRETACCESSKEY     "SecretAccessKey"
@@ -1264,7 +1264,7 @@ int S3fsCurl::ParallelMultipartUploadRequest(const char* tpath, headers_t& meta,
 
     // Multi request
     if(0 != (result = curlmulti.Request())){
-      S3FS_PRN_ERR("error occuered in multi request(errno=%d).", result);
+      S3FS_PRN_ERR("error occurred in multi request(errno=%d).", result);
       break;
     }
 
@@ -1350,7 +1350,7 @@ int S3fsCurl::ParallelGetObjectRequest(const char* tpath, int fd, off_t start, s
 
     // Multi request
     if(0 != (result = curlmulti.Request())){
-      S3FS_PRN_ERR("error occuered in multi request(errno=%d).", result);
+      S3FS_PRN_ERR("error occurred in multi request(errno=%d).", result);
       break;
     }
 
@@ -1501,19 +1501,42 @@ int S3fsCurl::CurlDebugFunc(CURL* hcurl, curl_infotype type, char* data, size_t 
   }
   switch(type){
     case CURLINFO_TEXT:
+      // Swap tab indentation with spaces so it stays pretty in syslog
+      int indent;
+      indent = 0;
+      while (*data == '\t' && size > 0) {
+        indent += 4;
+        size--;
+        data++;
+      }
+      S3FS_PRN_CURL("* %*s%.*s", indent, "", (int)size, data);
+      break;
     case CURLINFO_HEADER_IN:
     case CURLINFO_HEADER_OUT:
-      char* buff;
-      if(NULL == (buff = reinterpret_cast<char*>(malloc(size + 2 + 1)))){
-        // could not allocation memory
-        S3FS_PRN_CRIT("could not allocate memory");
-        break;
-      }
-      buff[size + 2] = '\0';
-      sprintf(buff, "%c ", (CURLINFO_TEXT == type ? '*' : CURLINFO_HEADER_IN == type ? '<' : '>'));
-      memcpy(&buff[2], data, size);
-      S3FS_PRN_CURL("%s", buff);      // no blocking
-      free(buff);
+      size_t length, remaining;
+      int newline;
+      char* p;
+
+      // Print each line individually for tidy output
+      remaining = size;
+      p = data;
+      do {
+        char* eol = (char*)memchr(p, '\n', remaining);
+        newline = 0;
+        if (eol == NULL) {
+          eol = (char*)memchr(p, '\r', remaining);
+        } else if (eol > p && *(eol - 1) == '\r') {
+          newline++;
+        }
+        if (eol != NULL) {
+          newline++;
+          eol++;
+        }
+        length = eol - p;
+        S3FS_PRN_CURL("%c %.*s", CURLINFO_HEADER_IN == type ? '<' : '>', (int)length - newline, p);
+        remaining -= length;
+        p = eol;
+      } while (p != NULL && remaining > 0);
       break;
     case CURLINFO_DATA_IN:
     case CURLINFO_DATA_OUT:
@@ -1599,7 +1622,7 @@ bool S3fsCurl::CreateCurlHandle(bool force)
       S3FS_PRN_ERR("could not destroy handle.");
       return false;
     }
-    S3FS_PRN_INFO3("already has handle, so destroied it.");
+    S3FS_PRN_INFO3("already has handle, so destroyed it.");
   }
 
   if(NULL == (hCurl = sCurlPool->GetHandler())){
@@ -2077,7 +2100,7 @@ string S3fsCurl::CalcSignatureV2(const string& method, const string& strMD5, con
   if(0 < S3fsCurl::IAM_role.size()){
     if(!S3fsCurl::CheckIAMCredentialUpdate()){
       S3FS_PRN_ERR("Something error occurred in checking IAM credential.");
-      return Signature;  // returns empty string, then it occures error.
+      return Signature;  // returns empty string, then it occurs error.
     }
     requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-security-token", S3fsCurl::AWSAccessToken.c_str());
   }
@@ -2119,7 +2142,7 @@ string S3fsCurl::CalcSignature(const string& method, const string& canonical_uri
   if(0 < S3fsCurl::IAM_role.size()){
     if(!S3fsCurl::CheckIAMCredentialUpdate()){
       S3FS_PRN_ERR("Something error occurred in checking IAM credential.");
-      return Signature;  // returns empty string, then it occures error.
+      return Signature;  // returns empty string, then it occurs error.
     }
     requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-security-token", S3fsCurl::AWSAccessToken.c_str());
   }
@@ -2299,7 +2322,7 @@ int S3fsCurl::DeleteRequest(const char* tpath)
 
 //
 // Get AccessKeyId/SecretAccessKey/AccessToken/Expiration by IAM role,
-// and Set these value to class valiable.
+// and Set these value to class variable.
 //
 int S3fsCurl::GetIAMCredentials(void)
 {
@@ -2329,7 +2352,7 @@ int S3fsCurl::GetIAMCredentials(void)
 
   int result = RequestPerform();
 
-  // analizing response
+  // analyzing response
   if(0 == result && !S3fsCurl::SetIAMCredentials(bodydata->str())){
     S3FS_PRN_ERR("Something error occurred, could not get IAM credential.");
   }
@@ -2366,7 +2389,7 @@ bool S3fsCurl::LoadIAMRoleFromMetaData(void)
 
   int result = RequestPerform();
 
-  // analizing response
+  // analyzing response
   if(0 == result && !S3fsCurl::SetIAMRoleFromMetaData(bodydata->str())){
     S3FS_PRN_ERR("Something error occurred, could not get IAM role name.");
     result = -EIO;
@@ -2654,7 +2677,7 @@ int S3fsCurl::PutRequest(const char* tpath, headers_t& meta, int fd)
     }
     b_infile = file;
   }else{
-    // This case is creating zero byte obejct.(calling by create_file_object())
+    // This case is creating zero byte object.(calling by create_file_object())
     S3FS_PRN_INFO3("create zero byte file object.");
   }
 
@@ -3418,7 +3441,8 @@ int S3fsCurl::CopyMultipartPostRequest(const char* from, const char* to, int par
   if(!CreateCurlHandle(true)){
     return -1;
   }
-  string urlargs  = "?partNumber=" + str(part_num) + "&uploadId=" + upload_id;
+  string request_uri = "partNumber=" + str(part_num) + "&uploadId=" + upload_id;
+  string urlargs     = "?" + request_uri;
   string resource;
   string turl;
   MakeUrlResource(get_realpath(to).c_str(), resource, turl);
@@ -3458,7 +3482,7 @@ int S3fsCurl::CopyMultipartPostRequest(const char* from, const char* to, int par
     }
 
   }else{
-    insertV4Headers("PUT", path, "", "");
+    insertV4Headers("PUT", path, request_uri, "");
   }
 
   // setopt
@@ -3893,7 +3917,7 @@ int S3fsMultiCurl::MultiRead(void)
             isRetry = true;
           }
         }else{
-          S3FS_PRN_ERR("failed a request(Unknown respons code: %s)", s3fscurl->url.c_str());
+          S3FS_PRN_ERR("failed a request(Unknown response code: %s)", s3fscurl->url.c_str());
         }
       }else{
         S3FS_PRN_WARN("failed to read(remaining: %d code: %d  msg: %s), so retry this.",
@@ -4028,7 +4052,7 @@ struct curl_slist* curl_slist_sort_insert(struct curl_slist* list, const char* k
     return list;
   }
 
-  // key & value are trimed and lower(only key)
+  // key & value are trimmed and lower (only key)
   string strkey = trim(string(key));
   string strval = trim(string(value ? value : ""));
   string strnew = key + string(": ") + strval;

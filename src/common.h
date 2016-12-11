@@ -118,12 +118,18 @@ enum s3fs_log_level{
 //
 // Typedef
 //
-typedef std::map<std::string, std::string> headers_t;
+struct header_nocase_cmp : public std::binary_function<std::string, std::string, bool>{
+  bool operator()(const std::string &strleft, const std::string &strright) const
+  {
+    return (strcasecmp(strleft.c_str(), strright.c_str()) < 0);
+  }
+};
+typedef std::map<std::string, std::string, header_nocase_cmp> headers_t;
 
 //
 // Header "x-amz-meta-xattr" is for extended attributes.
-// This header is url encoded string which is json formated.
-//   x-amz-meta-xattr:urlencod({"xattr-1":"base64(value-1)","xattr-2":"base64(value-2)","xattr-3":"base64(value-3)"})
+// This header is url encoded string which is json formatted.
+//   x-amz-meta-xattr:urlencode({"xattr-1":"base64(value-1)","xattr-2":"base64(value-2)","xattr-3":"base64(value-3)"})
 //
 typedef struct xattr_value{
   unsigned char* pvalue;
@@ -141,7 +147,7 @@ typedef struct xattr_value{
 typedef std::map<std::string, PXATTRVAL> xattrs_t;
 
 //
-// Global valiables
+// Global variables
 //
 extern bool           foreground;
 extern bool           nomultipart;

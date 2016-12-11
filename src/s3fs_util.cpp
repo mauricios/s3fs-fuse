@@ -46,7 +46,7 @@
 using namespace std;
 
 //-------------------------------------------------------------------
-// Global valiables
+// Global variables
 //-------------------------------------------------------------------
 std::string mount_prefix   = "";
 
@@ -58,20 +58,6 @@ string get_realpath(const char *path) {
   realpath += path;
 
   return realpath;
-}
-
-inline headers_t::const_iterator find_content_type(headers_t& meta)
-{
-  headers_t::const_iterator iter;
-
-  if(meta.end() == (iter = meta.find("Content-Type"))){
-    if(meta.end() == (iter = meta.find("Content-type"))){
-      if(meta.end() == (iter = meta.find("content-type"))){
-        iter = meta.find("content-Type");
-      }
-    }
-  }
-  return iter;
 }
 
 //-------------------------------------------------------------------
@@ -124,7 +110,7 @@ bool S3ObjList::insert(const char* name, const char* etag, bool is_dir)
     if(objects.end() != (iter = objects.find(chkname))){
       // found "dir/" object --> not add new object.
       // and add normalization
-      return insert_nomalized(orgname.c_str(), chkname.c_str(), true);
+      return insert_normalized(orgname.c_str(), chkname.c_str(), true);
     }
   }
 
@@ -149,10 +135,10 @@ bool S3ObjList::insert(const char* name, const char* etag, bool is_dir)
   }
 
   // add normalization
-  return insert_nomalized(orgname.c_str(), newname.c_str(), is_dir);
+  return insert_normalized(orgname.c_str(), newname.c_str(), is_dir);
 }
 
-bool S3ObjList::insert_nomalized(const char* name, const char* normalized, bool is_dir)
+bool S3ObjList::insert_normalized(const char* name, const char* normalized, bool is_dir)
 {
   if(!name || '\0' == name[0] || !normalized || '\0' == normalized[0]){
     return false;
@@ -455,7 +441,7 @@ AutoLock::~AutoLock()
 // get user name from uid
 string get_username(uid_t uid)
 {
-  static size_t maxlen = 0;	// set onece
+  static size_t maxlen = 0;	// set once
   char* pbuf;
   struct passwd pwinfo;
   struct passwd* ppwinfo = NULL;
@@ -490,9 +476,9 @@ string get_username(uid_t uid)
   return name;
 }
 
-int is_uid_inculde_group(uid_t uid, gid_t gid)
+int is_uid_include_group(uid_t uid, gid_t gid)
 {
-  static size_t maxlen = 0;	// set onece
+  static size_t maxlen = 0;	// set once
   int result;
   char* pbuf;
   struct group ginfo;
@@ -613,7 +599,7 @@ bool check_exist_dir_permission(const char* dirpath)
       // could not access directory
       return false;
     }
-    // somthing error occured
+    // something error occurred
     return false;
   }
 
@@ -630,7 +616,7 @@ bool check_exist_dir_permission(const char* dirpath)
       return false;
     }
   }else{
-    if(1 == is_uid_inculde_group(myuid, st.st_gid)){
+    if(1 == is_uid_include_group(myuid, st.st_gid)){
       if(S_IRWXG != (st.st_mode & S_IRWXG)){
         return false;
       }
@@ -717,8 +703,8 @@ off_t get_size(const char *s)
 
 off_t get_size(headers_t& meta)
 {
-  headers_t::const_iterator iter;
-  if(meta.end() == (iter = meta.find("Content-Length"))){
+  headers_t::const_iterator iter = meta.find("Content-Length");
+  if(meta.end() == iter){
     return 0;
   }
   return get_size((*iter).second.c_str());
@@ -752,7 +738,7 @@ mode_t get_mode(headers_t& meta, const char* path, bool checkdir, bool forcedir)
         if(forcedir){
           mode |= S_IFDIR;
         }else{
-          if(meta.end() != (iter = find_content_type(meta))){
+          if(meta.end() != (iter = meta.find("Content-Type"))){
             string strConType = (*iter).second;
             // Leave just the mime type, remove any optional parameters (eg charset)
             string::size_type pos = strConType.find(";");
@@ -847,8 +833,8 @@ time_t get_lastmodified(const char* s)
 
 time_t get_lastmodified(headers_t& meta)
 {
-  headers_t::const_iterator iter;
-  if(meta.end() == (iter = meta.find("Last-Modified"))){
+  headers_t::const_iterator iter = meta.find("Last-Modified");
+  if(meta.end() == iter){
     return 0;
   }
   return get_lastmodified((*iter).second.c_str());
@@ -880,7 +866,7 @@ bool is_need_check_obj_detail(headers_t& meta)
   }
   // if there is not Content-Type, or Content-Type is "x-directory",
   // checking is no more.
-  if(meta.end() == (iter = find_content_type(meta))){
+  if(meta.end() == (iter = meta.find("Content-Type"))){
     return false;
   }
   if("application/x-directory" == (*iter).second){
@@ -973,7 +959,7 @@ void show_help (void)
     "        with \":\" separator.) This option is used to decide the\n"
     "        SSE type. So that if you do not want to encrypt a object\n"
     "        object at uploading, but you need to decrypt encrypted\n"
-    "        object at downloaing, you can use load_sse_c option instead\n"
+    "        object at downloading, you can use load_sse_c option instead\n"
     "        of this option.\n"
     "        For setting SSE-KMS, specify \"use_sse=kmsid\" or\n"
     "        \"use_sse=kmsid:<kms id>\". You can use \"k\" for short \"kmsid\".\n"
@@ -985,9 +971,9 @@ void show_help (void)
     "        region.\n"
     "\n"
     "   load_sse_c - specify SSE-C keys\n"
-    "        Specify the custom-provided encription keys file path for decrypting\n"
-    "        at duwnloading.\n"
-    "        If you use the custom-provided encription key at uploading, you\n"
+    "        Specify the custom-provided encryption keys file path for decrypting\n"
+    "        at downloading.\n"
+    "        If you use the custom-provided encryption key at uploading, you\n"
     "        specify with \"use_sse=custom\". The file has many lines, one line\n"
     "        means one custom key. So that you can keep all SSE-C keys in file,\n"
     "        that is SSE-C key history. AWSSSECKEYS environment is as same as this\n"
@@ -1145,7 +1131,7 @@ void show_help (void)
     "        nocopyapi, then s3fs ignores it.\n"
     "\n"
     "   use_path_request_style (use legacy API calling style)\n"
-    "        Enble compatibility with S3-like APIs which do not support\n"
+    "        Enable compatibility with S3-like APIs which do not support\n"
     "        the virtual-host request style, by using the older path request\n"
     "        style.\n"
     "\n"
@@ -1183,7 +1169,7 @@ void show_help (void)
     " -d  --debug       Turn on DEBUG messages to syslog. Specifying -d\n"
     "                   twice turns on FUSE debug messages to STDOUT.\n"
     " -f                FUSE foreground option - do not run as daemon.\n"
-    " -s                FUSE singlethread option\n"
+    " -s                FUSE singlethreaded option\n"
     "                   disable multi-threaded operation\n"
     "\n"
     "\n"
