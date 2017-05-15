@@ -1,7 +1,7 @@
 /*
  * s3fs - FUSE-based file system backed by Amazon S3
  *
- * Copyright 2007-2008 Randy Rizun <rrizun@gmail.com>
+ * Copyright(C) 2007 Randy Rizun <rrizun@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -88,9 +88,11 @@ class AutoLock
 {
   private:
     pthread_mutex_t* auto_mutex;
+    bool is_lock_acquired;
 
   public:
-    explicit AutoLock(pthread_mutex_t* pmutex);
+    explicit AutoLock(pthread_mutex_t* pmutex, bool no_wait = false);
+    bool isLockAcquired() const;
     ~AutoLock();
 };
 
@@ -111,6 +113,7 @@ std::string mydirname(std::string path);
 std::string mybasename(const char* path);
 std::string mybasename(std::string path);
 int mkdirp(const std::string& path, mode_t mode);
+std::string get_exist_directory_path(const std::string& path);
 bool check_exist_dir_permission(const char* dirpath);
 bool delete_files_in_dir(const char* dir, bool is_remove_own);
 

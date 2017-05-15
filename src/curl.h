@@ -1,7 +1,7 @@
 /*
  * s3fs - FUSE-based file system backed by Amazon S3
  *
- * Copyright 2007-2008 Randy Rizun <rrizun@gmail.com>
+ * Copyright(C) 2007 Randy Rizun <rrizun@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -130,7 +130,7 @@ class S3fsMultiCurl;
 class CurlHandlerPool
 {
 public:
-  CurlHandlerPool(int maxHandlers)
+  explicit CurlHandlerPool(int maxHandlers)
     : mMaxHandlers(maxHandlers)
     , mHandlers(NULL)
     , mIndex(-1)
@@ -319,6 +319,7 @@ class S3fsCurl
 
     int UploadMultipartPostSetup(const char* tpath, int part_num, const std::string& upload_id);
     int CopyMultipartPostRequest(const char* from, const char* to, int part_num, std::string& upload_id, headers_t& meta);
+    bool UploadMultipartPostComplete();
 
   public:
     // class methods
@@ -441,7 +442,6 @@ class S3fsMultiCurl
   private:
     static int    max_multireq;
 
-    CURLM*        hMulti;
     s3fscurlmap_t cMap_all;  // all of curl requests
     s3fscurlmap_t cMap_req;  // curl requests are sent
 
@@ -452,6 +452,8 @@ class S3fsMultiCurl
     bool ClearEx(bool is_all);
     int MultiPerform(void);
     int MultiRead(void);
+
+    static void* RequestPerformWrapper(void* arg);
 
   public:
     S3fsMultiCurl();

@@ -1,7 +1,7 @@
 /*
  * s3fs - FUSE-based file system backed by Amazon S3
  *
- * Copyright 2007-2013 Takeshi Nakatani <ggtakec.com>
+ * Copyright(C) 2007 Takeshi Nakatani <ggtakec.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -31,6 +31,7 @@
 #include <errno.h>
 #include <string.h>
 #include <assert.h>
+#include <dirent.h>
 #include <curl/curl.h>
 #include <string>
 #include <iostream>
@@ -724,12 +725,15 @@ void FdEntity::Close(void)
   }
 }
 
-int FdEntity::Dup(void)
+int FdEntity::Dup(bool no_fd_lock_wait)
 {
   S3FS_PRN_DBG("[path=%s][fd=%d][refcnt=%d]", path.c_str(), fd, (-1 != fd ? refcnt + 1 : refcnt));
 
   if(-1 != fd){
-    AutoLock auto_lock(&fdent_lock);
+    AutoLock auto_lock(&fdent_lock, no_fd_lock_wait);
+    if (!auto_lock.isLockAcquired()) {
+      return -1;
+    }
     refcnt++;
   }
   return fd;
@@ -781,13 +785,16 @@ int FdEntity::OpenMirrorFile(void)
 // This method does not lock fdent_lock, because FdManager::fd_manager_lock
 // is locked before calling.
 //
-int FdEntity::Open(headers_t* pmeta, ssize_t size, time_t time)
+int FdEntity::Open(headers_t* pmeta, ssize_t size, time_t time, bool no_fd_lock_wait)
 {
   S3FS_PRN_DBG("[path=%s][fd=%d][size=%jd][time=%jd]", path.c_str(), fd, (intmax_t)size, (intmax_t)time);
 
   if(-1 != fd){
     // already opened, needs to increment refcnt.
-    Dup();
+    if (fd != Dup(no_fd_lock_wait)) {
+      // had to wait for fd lock, return
+      return -EIO;
+    }
 
     // check only file size(do not need to save cfs and time.
     if(0 <= size && pagelist.Size() != static_cast<size_t>(size)){
@@ -1545,6 +1552,10 @@ ssize_t FdEntity::Read(char* bytes, off_t start, size_t size, bool force_load)
   if(-1 == fd){
     return -EBADF;
   }
+  // check if not enough disk space left BEFORE locking fd
+  if(FdManager::IsCacheDir() && !FdManager::IsSafeDiskSpace(NULL, size)){
+    FdManager::get()->CleanupCacheDir();
+  }
   AutoLock auto_lock(&fdent_lock);
 
   if(force_load){
@@ -1604,6 +1615,10 @@ ssize_t FdEntity::Write(const char* bytes, off_t start, size_t size)
 
   if(-1 == fd){
     return -EBADF;
+  }
+  // check if not enough disk space left BEFORE locking fd
+  if(FdManager::IsCacheDir() && !FdManager::IsSafeDiskSpace(NULL, size)){
+    FdManager::get()->CleanupCacheDir();
   }
   AutoLock auto_lock(&fdent_lock);
 
@@ -1686,6 +1701,22 @@ ssize_t FdEntity::Write(const char* bytes, off_t start, size_t size)
   return wsize;
 }
 
+void FdEntity::CleanupCache()
+{
+  AutoLock auto_lock(&fdent_lock, true);
+
+  if (!auto_lock.isLockAcquired()) {
+    return;
+  }
+
+  if (is_modify) {
+    // cache is not commited to s3, cannot cleanup
+    return;
+  }
+
+  FdManager::DeleteCacheFile(path.c_str());
+}
+
 //------------------------------------------------
 // FdManager symbol
 //------------------------------------------------
@@ -1709,8 +1740,10 @@ ssize_t FdEntity::Write(const char* bytes, off_t start, size_t size)
 //------------------------------------------------
 FdManager       FdManager::singleton;
 pthread_mutex_t FdManager::fd_manager_lock;
+pthread_mutex_t FdManager::cache_cleanup_lock;
 bool            FdManager::is_lock_init(false);
 string          FdManager::cache_dir("");
+bool            FdManager::check_cache_dir_exist(false);
 size_t          FdManager::free_disk_space = 0;
 
 //------------------------------------------------
@@ -1721,16 +1754,6 @@ bool FdManager::SetCacheDir(const char* dir)
   if(!dir || '\0' == dir[0]){
     cache_dir = "";
   }else{
-    // check the directory
-    struct stat st;
-    if(0 != stat(dir, &st)){
-      S3FS_PRN_ERR("could not access to cache directory(%s) by errno(%d).", cache_dir.c_str(), errno);
-      return false;
-    }
-    if(!S_ISDIR(st.st_mode)){
-      S3FS_PRN_ERR("the cache directory(%s) is not directory.", cache_dir.c_str());
-      return false;
-    }
     cache_dir = dir;
   }
   return true;
@@ -1838,6 +1861,34 @@ bool FdManager::MakeRandomTempPath(const char* path, string& tmppath)
   return true;
 }
 
+bool FdManager::SetCheckCacheDirExist(bool is_check)
+{
+  bool old = FdManager::check_cache_dir_exist;
+  FdManager::check_cache_dir_exist = is_check;
+  return old;
+}
+
+bool FdManager::CheckCacheDirExist(void)
+{
+  if(!FdManager::check_cache_dir_exist){
+    return true;
+  }
+  if(0 == FdManager::cache_dir.size()){
+    return true;
+  }
+  // check the directory
+  struct stat st;
+  if(0 != stat(cache_dir.c_str(), &st)){
+    S3FS_PRN_ERR("could not access to cache directory(%s) by errno(%d).", cache_dir.c_str(), errno);
+    return false;
+  }
+  if(!S_ISDIR(st.st_mode)){
+    S3FS_PRN_ERR("the cache directory(%s) is not directory.", cache_dir.c_str());
+    return false;
+  }
+  return true;
+}
+
 size_t FdManager::SetEnsureFreeDiskSpace(size_t size)
 {
   size_t old = FdManager::free_disk_space;
@@ -1863,6 +1914,10 @@ fsblkcnt_t FdManager::GetFreeDiskSpace(const char* path)
   string         ctoppath;
   if(0 < FdManager::cache_dir.size()){
     ctoppath = FdManager::cache_dir + "/";
+    ctoppath = get_exist_directory_path(ctoppath);	// existed directory
+    if(ctoppath != "/"){
+      ctoppath += "/";
+    }
   }else{
     ctoppath = TMPFILE_DIR_0PATH "/";
   }
@@ -1892,6 +1947,7 @@ FdManager::FdManager()
   if(this == FdManager::get()){
     try{
       pthread_mutex_init(&FdManager::fd_manager_lock, NULL);
+      pthread_mutex_init(&FdManager::cache_cleanup_lock, NULL);
       FdManager::is_lock_init = true;
     }catch(exception& e){
       FdManager::is_lock_init = false;
@@ -1914,6 +1970,7 @@ FdManager::~FdManager()
     if(FdManager::is_lock_init){
       try{
         pthread_mutex_destroy(&FdManager::fd_manager_lock);
+        pthread_mutex_destroy(&FdManager::cache_cleanup_lock);
       }catch(exception& e){
         S3FS_PRN_CRIT("failed to init mutex");
       }
@@ -1954,7 +2011,7 @@ FdEntity* FdManager::GetFdEntity(const char* path, int existfd)
   return NULL;
 }
 
-FdEntity* FdManager::Open(const char* path, headers_t* pmeta, ssize_t size, time_t time, bool force_tmpfile, bool is_create)
+FdEntity* FdManager::Open(const char* path, headers_t* pmeta, ssize_t size, time_t time, bool force_tmpfile, bool is_create, bool no_fd_lock_wait)
 {
   S3FS_PRN_DBG("[path=%s][size=%jd][time=%jd]", SAFESTRPTR(path), (intmax_t)size, (intmax_t)time);
 
@@ -2014,7 +2071,7 @@ FdEntity* FdManager::Open(const char* path, headers_t* pmeta, ssize_t size, time
   }
 
   // open
-  if(-1 == ent->Open(pmeta, size, time)){
+  if(0 != ent->Open(pmeta, size, time, no_fd_lock_wait)){
     return NULL;
   }
   return ent;
@@ -2110,6 +2167,61 @@ bool FdManager::ChangeEntityToTempPath(FdEntity* ent, const char* path)
     }
   }
   return false;
+}
+
+void FdManager::CleanupCacheDir()
+{
+  if (!FdManager::IsCacheDir()) {
+    return;
+  }
+
+  AutoLock auto_lock(&FdManager::cache_cleanup_lock, true);
+
+  if (!auto_lock.isLockAcquired()) {
+    return;
+  }
+
+  CleanupCacheDirInternal("");
+}
+
+void FdManager::CleanupCacheDirInternal(const std::string &path)
+{
+  DIR*           dp;
+  struct dirent* dent;
+  std::string    abs_path = cache_dir + "/" + bucket + path;
+
+  if(NULL == (dp = opendir(abs_path.c_str()))){
+    S3FS_PRN_ERR("could not open cache dir(%s) - errno(%d)", abs_path.c_str(), errno);
+    return;
+  }
+
+  for(dent = readdir(dp); dent; dent = readdir(dp)){
+    if(0 == strcmp(dent->d_name, "..") || 0 == strcmp(dent->d_name, ".")){
+      continue;
+    }
+    string   fullpath = abs_path;
+    fullpath         += "/";
+    fullpath         += dent->d_name;
+    struct stat st;
+    if(0 != lstat(fullpath.c_str(), &st)){
+      S3FS_PRN_ERR("could not get stats of file(%s) - errno(%d)", fullpath.c_str(), errno);
+      closedir(dp);
+      return;
+    }
+    string next_path = path + "/" + dent->d_name;
+    if(S_ISDIR(st.st_mode)){
+      CleanupCacheDirInternal(next_path);
+    }else{
+      FdEntity* ent;
+      if(NULL == (ent = FdManager::get()->Open(next_path.c_str(), NULL, -1, -1, false, true, true))){
+        continue;
+      }
+
+      ent->CleanupCache();
+      Close(ent);
+    }
+  }
+  closedir(dp);
 }
 
 /*

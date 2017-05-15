@@ -1,7 +1,7 @@
 /*
  * s3fs - FUSE-based file system backed by Amazon S3
  *
- * Copyright 2007-2008 Randy Rizun <rrizun@gmail.com>
+ * Copyright(C) 2007 Randy Rizun <rrizun@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -152,12 +152,14 @@ typedef std::map<std::string, PXATTRVAL> xattrs_t;
 extern bool           foreground;
 extern bool           nomultipart;
 extern bool           pathrequeststyle;
+extern bool           complement_stat;
 extern std::string    program_name;
 extern std::string    service_path;
 extern std::string    host;
 extern std::string    bucket;
 extern std::string    mount_prefix;
 extern std::string    endpoint;
+extern std::string    cipher_suites;
 extern s3fs_log_level debug_level;
 extern const char*    s3fs_log_nest[S3FS_LOG_NEST_MAX];
 

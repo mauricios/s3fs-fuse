@@ -1,7 +1,7 @@
 /*
  * s3fs - FUSE-based file system backed by Amazon S3
  *
- * Copyright 2007-2013 Takeshi Nakatani <ggtakec.com>
+ * Copyright(C) 2007 Takeshi Nakatani <ggtakec.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -425,14 +425,25 @@ void free_mvnodes(MVNODE *head)
 //-------------------------------------------------------------------
 // Class AutoLock
 //-------------------------------------------------------------------
-AutoLock::AutoLock(pthread_mutex_t* pmutex) : auto_mutex(pmutex)
+AutoLock::AutoLock(pthread_mutex_t* pmutex, bool no_wait) : auto_mutex(pmutex)
 {
-  pthread_mutex_lock(auto_mutex);
+  if (no_wait) {
+    is_lock_acquired = pthread_mutex_trylock(auto_mutex) == 0;
+  } else {
+    is_lock_acquired = pthread_mutex_lock(auto_mutex) == 0;
+  }
+}
+
+bool AutoLock::isLockAcquired() const
+{
+  return is_lock_acquired;
 }
 
 AutoLock::~AutoLock()
 {
-  pthread_mutex_unlock(auto_mutex);
+  if (is_lock_acquired) {
+    pthread_mutex_unlock(auto_mutex);
+  }
 }
 
 //-------------------------------------------------------------------
@@ -580,6 +591,28 @@ int mkdirp(const string& path, mode_t mode)
     }
   }
   return 0;
+}
+
+// get existed directory path
+string get_exist_directory_path(const string& path)
+{
+  string       existed("/");    // "/" is existed.
+  string       base;
+  string       component;
+  stringstream ss(path);
+  while (getline(ss, component, '/')) {
+    if(base != "/"){
+      base += "/";
+    }
+    base += component;
+    struct stat st;
+    if(0 == stat(base.c_str(), &st) && S_ISDIR(st.st_mode)){
+      existed = base;
+    }else{
+      break;
+    }
+  }
+  return existed;
 }
 
 bool check_exist_dir_permission(const char* dirpath)
@@ -751,7 +784,19 @@ mode_t get_mode(headers_t& meta, const char* path, bool checkdir, bool forcedir)
               if(strConType == "binary/octet-stream" || strConType == "application/octet-stream"){
                 mode |= S_IFDIR;
               }else{
-                mode |= S_IFREG;
+                if(complement_stat){
+                  // If complement lack stat mode, when the object has '/' charactor at end of name
+                  // and content type is text/plain and the object's size is 0 or 1, it should be
+                  // directory.
+                  off_t size = get_size(meta);
+                  if(strConType == "text/plain" && (0 == size || 1 == size)){
+                    mode |= S_IFDIR;
+                  }else{
+                    mode |= S_IFREG;
+                  }
+                }else{
+                  mode |= S_IFREG;
+                }
               }
             }else{
               mode |= S_IFREG;
@@ -760,6 +805,11 @@ mode_t get_mode(headers_t& meta, const char* path, bool checkdir, bool forcedir)
             mode |= S_IFREG;
           }
         }
+      }
+      // If complement lack stat mode, when it's mode is not set any permission,
+      // the object is added minimal mode only for read permission.
+      if(complement_stat && 0 == (mode & (S_IRWXU | S_IRWXG | S_IRWXO))){
+        mode |= (S_IRUSR | (0 == (mode & S_IFDIR) ? 0 : S_IXUSR));
       }
     }else{
       if(!checkdir){
@@ -917,8 +967,9 @@ void show_help (void)
     "        must specify this option after -o option for bucket name.\n"
     "\n"
     "   default_acl (default=\"private\")\n"
-    "      - the default canned acl to apply to all written s3 objects\n"
-    "        see http://aws.amazon.com/documentation/s3/ for the \n"
+    "      - the default canned acl to apply to all written s3 objects,\n"
+    "        e.g., private, public-read.  empty string means do not send\n"
+    "        header.  see http://aws.amazon.com/documentation/s3/ for the\n"
     "        full list of canned acls\n"
     "\n"
     "   retries (default=\"2\")\n"
@@ -926,6 +977,11 @@ void show_help (void)
     "\n"
     "   use_cache (default=\"\" which means disabled)\n"
     "      - local folder to use for local file cache\n"
+    "\n"
+    "   check_cache_dir_exist (default is disable)\n"
+    "      - if use_cache is set, check if the cache directory exists.\n"
+    "        if this option is not specified, it will be created at runtime\n"
+    "        when the cache directory does not exist.\n"
     "\n"
     "   del_cache (delete local file cache)\n"
     "      - delete local file cache when s3fs starts and exits.\n"
@@ -980,7 +1036,11 @@ void show_help (void)
     "        file contents.\n"
     "\n"
     "   public_bucket (default=\"\" which means disabled)\n"
-    "      - anonymously mount a public bucket when set to 1\n"
+    "      - anonymously mount a public bucket when set to 1, ignores the \n"
+    "        $HOME/.passwd-s3fs and /etc/passwd-s3fs files.\n"
+    "        S3 does not allow copy object api for anonymous users, then\n"
+    "        s3fs sets nocopyapi option automatically when public_bucket=1\n"
+    "        option is specified.\n"
     "\n"
     "   passwd_file (default=\"\")\n"
     "      - specify which s3fs password file to use\n"
@@ -1019,6 +1079,7 @@ void show_help (void)
     "\n"
     "   stat_cache_expire (default is no expire)\n"
     "      - specify expire time(seconds) for entries in the stat cache.\n"
+    "        This expire time indicates the time since stat cached.\n"
     "\n"
     "   enable_noobj_cache (default is disable)\n"
     "      - enable cache entries for the object which does not exist.\n"
@@ -1065,8 +1126,11 @@ void show_help (void)
     "      - maximum size, in MB, of a single-part copy before trying \n"
     "      multipart copy.\n"
     "\n"
-    "   url (default=\"http://s3.amazonaws.com\")\n"
-    "      - sets the url to use to access amazon s3\n"
+    "   url (default=\"https://s3.amazonaws.com\")\n"
+    "      - sets the url to use to access Amazon S3. If you want to use HTTP,\n"
+    "        then you can set \"url=http://s3.amazonaws.com\".\n"
+    "        If you do not use https, please specify the URL with the url\n"
+    "        option.\n"
     "\n"
     "   endpoint (default=\"us-east-1\")\n"
     "      - sets the endpoint to use on signature version 4\n"
@@ -1150,6 +1214,38 @@ void show_help (void)
     "\n"
     "   curldbg - put curl debug message\n"
     "        Put the debug message from libcurl when this option is specified.\n"
+    "\n"
+    "   cipher_suites - customize TLS cipher suite list\n"
+    "        Customize the list of TLS cipher suites.\n"
+    "        Expects a colon separated list of cipher suite names.\n"
+    "        A list of available cipher suites, depending on your TLS engine,\n"
+    "        can be found on the CURL library documentation:\n"
+    "        https://curl.haxx.se/docs/ssl-ciphers.html\n"
+    "\n"
+    "   complement_stat (complement lack of file/directory mode)\n"
+    "        s3fs complements lack of information about file/directory mode\n"
+    "        if a file or a directory object does not have x-amz-meta-mode\n"
+    "        header. As default, s3fs does not complements stat information\n"
+    "        for a object, then the object will not be able to be allowed to\n"
+    "        list/modify.\n"
+    "\n"
+    "   notsup_compat_dir (not support compatibility directory types)\n"
+    "        As a default, s3fs supports objects of the directory type as\n"
+    "        much as possible and recognizes them as directories.\n"
+    "        Objects that can be recognized as directory objects are \"dir/\",\n"
+    "        \"dir\", \"dir_$folder$\", and there is a file object that does\n"
+    "        not have a directory object but contains that directory path.\n"
+    "        s3fs needs redundant communication to support all these\n"
+    "        directory types. The object as the directory created by s3fs\n"
+    "        is \"dir/\". By restricting s3fs to recognize only \"dir/\" as\n"
+    "        a directory, communication traffic can be reduced. This option\n"
+    "        is used to give this restriction to s3fs.\n"
+    "        However, if there is a directory object other than \"dir/\" in\n"
+    "        the bucket, specifying this option is not recommended. s3fs may\n"
+    "        not be able to recognize the object correctly if an object\n"
+    "        created by s3fs exists in the bucket.\n"
+    "        Please use this option when the directory in the bucket is\n"
+    "        only \"dir/\" object.\n"
     "\n"
     "FUSE/mount Options:\n"
     "\n"

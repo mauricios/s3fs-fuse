@@ -1,7 +1,7 @@
 /*
  * s3fs - FUSE-based file system backed by Amazon S3
  *
- * Copyright 2007-2008 Randy Rizun <rrizun@gmail.com>
+ * Copyright(C) 2007 Randy Rizun <rrizun@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -88,11 +88,13 @@ typedef std::list<UNCOMP_MP_INFO> uncomp_mp_list_t;
 bool foreground                   = false;
 bool nomultipart                  = false;
 bool pathrequeststyle             = false;
+bool complement_stat              = false;
 std::string program_name;
 std::string service_path          = "/";
-std::string host                  = "http://s3.amazonaws.com";
+std::string host                  = "https://s3.amazonaws.com";
 std::string bucket                = "";
 std::string endpoint              = "us-east-1";
+std::string cipher_suites         = "";
 s3fs_log_level debug_level        = S3FS_LOG_CRIT;
 const char*    s3fs_log_nest[S3FS_LOG_NEST_MAX] = {"", "  ", "    ", "      "};
 
@@ -125,6 +127,7 @@ static bool create_bucket         = false;
 static int64_t singlepart_copy_limit = FIVE_GB;
 static bool is_specified_endpoint = false;
 static int s3fs_init_deferred_exit_status = 0;
+static bool support_compat_dir    = true;// default supports compatibility directory type
 
 //-------------------------------------------------------------------
 // Static functions : prototype
@@ -270,6 +273,12 @@ static s3fs_log_level bumpup_s3fs_log_level(void)
 
 static bool is_special_name_folder_object(const char* path)
 {
+  if(!support_compat_dir){
+    // s3fs does not support compatibility directory type("_$folder$" etc) now,
+    // thus always returns false.
+    return false;
+  }
+
   if(!path || '\0' == path[0]){
     return false;
   }
@@ -325,7 +334,7 @@ static int chk_dir_object_type(const char* path, string& newpath, string& nowpat
   if(0 == (result = get_object_attribute(newpath.c_str(), NULL, pmeta, false, &isforce))){
     // Found "dir/" cache --> Check for "_$folder$", "no dir object"
     nowcache = newpath;
-    if(is_special_name_folder_object(newpath.c_str())){
+    if(is_special_name_folder_object(newpath.c_str())){     // check support_compat_dir in this function
       // "_$folder$" type.
       (*pType) = DIRTYPE_FOLDER;
       nowpath = newpath.substr(0, newpath.length() - 1) + "_$folder$"; // cut and add
@@ -343,8 +352,8 @@ static int chk_dir_object_type(const char* path, string& newpath, string& nowpat
         (*pType) = DIRTYPE_OLD;
       }
     }
-  }else{
-    // Check "dir"
+  }else if(support_compat_dir){
+    // Check "dir" when support_compat_dir is enabled
     nowpath = newpath.substr(0, newpath.length() - 1);
     if(0 == (result = get_object_attribute(nowpath.c_str(), NULL, pmeta, false, &isforce))){
       // Found "dir" cache --> this case is only "dir" type.
@@ -359,6 +368,7 @@ static int chk_dir_object_type(const char* path, string& newpath, string& nowpat
       }
     }else{
       // Not found cache --> check for "_$folder$" and "no dir object".
+      // (come here is that support_compat_dir is enabled)
       nowcache = "";  // This case is no cache.
       nowpath += "_$folder$";
       if(is_special_name_folder_object(nowpath.c_str())){
@@ -419,13 +429,12 @@ static int get_object_attribute(const char* path, struct stat* pstbuf, headers_t
   }
 
   // Check cache.
-  strpath = path;
-  if(overcheck && string::npos != (Pos = strpath.find("_$folder$", 0))){
+  pisforce    = (NULL != pisforce ? pisforce : &forcedir);
+  (*pisforce) = false;
+  strpath     = path;
+  if(support_compat_dir && overcheck && string::npos != (Pos = strpath.find("_$folder$", 0))){
     strpath = strpath.substr(0, Pos);
     strpath += "/";
-  }
-  if(pisforce){
-    (*pisforce) = false;
   }
   if(StatCache::getStatCacheData()->GetStat(strpath, pstat, pheader, overcheck, pisforce)){
     StatCache::getStatCacheData()->ChangeNoTruncateFlag(strpath, add_no_truncate_cache);
@@ -441,57 +450,51 @@ static int get_object_attribute(const char* path, struct stat* pstbuf, headers_t
   result      = s3fscurl.HeadRequest(strpath.c_str(), (*pheader));
   s3fscurl.DestroyCurlHandle();
 
-  // overcheck
-  if(overcheck && 0 != result){
-    if('/' != strpath[strpath.length() - 1] && string::npos == strpath.find("_$folder$", 0)){
-      // path is "object", check "object/" for overcheck
-      strpath    += "/";
-      result      = s3fscurl.HeadRequest(strpath.c_str(), (*pheader));
-      s3fscurl.DestroyCurlHandle();
-    }
-    if(0 != result){
-      // not found "object/", check "_$folder$"
-      strpath = path;
-      if(string::npos == strpath.find("_$folder$", 0)){
-        if('/' == strpath[strpath.length() - 1]){
-          strpath = strpath.substr(0, strpath.length() - 1);
-        }
-        strpath    += "_$folder$";
+  // if not found target path object, do over checking
+  if(0 != result){
+    if(overcheck){
+      // when support_compat_dir is disabled, strpath maybe have "_$folder$".
+      if('/' != strpath[strpath.length() - 1] && string::npos == strpath.find("_$folder$", 0)){
+        // now path is "object", do check "object/" for over checking
+        strpath    += "/";
         result      = s3fscurl.HeadRequest(strpath.c_str(), (*pheader));
         s3fscurl.DestroyCurlHandle();
       }
-    }
-    if(0 != result){
-      // not found "object/" and "object_$folder$", check no dir object.
-      strpath = path;
-      if(string::npos == strpath.find("_$folder$", 0)){
-        if('/' == strpath[strpath.length() - 1]){
-          strpath = strpath.substr(0, strpath.length() - 1);
-        }
-        if(-ENOTEMPTY == directory_empty(strpath.c_str())){
-          // found "no dir object".
-          strpath += "/";
-          forcedir = true;
-          if(pisforce){
-            (*pisforce) = true;
+      if(support_compat_dir && 0 != result){
+        // now path is "object/", do check "object_$folder$" for over checking
+        strpath     = strpath.substr(0, strpath.length() - 1);
+        strpath    += "_$folder$";
+        result      = s3fscurl.HeadRequest(strpath.c_str(), (*pheader));
+        s3fscurl.DestroyCurlHandle();
+
+        if(0 != result){
+          // cut "_$folder$" for over checking "no dir object" after here
+          if(string::npos != (Pos = strpath.find("_$folder$", 0))){
+            strpath  = strpath.substr(0, Pos);
           }
-          result = 0;
         }
       }
     }
+    if(support_compat_dir && 0 != result && string::npos == strpath.find("_$folder$", 0)){
+      // now path is "object" or "object/", do check "no dir object" which is not object but has only children.
+      if('/' == strpath[strpath.length() - 1]){
+        strpath = strpath.substr(0, strpath.length() - 1);
+      }
+      if(-ENOTEMPTY == directory_empty(strpath.c_str())){
+        // found "no dir object".
+        strpath  += "/";
+        *pisforce = true;
+        result    = 0;
+      }
+    }
   }else{
-    // found "path" object.
-    if('/' != strpath[strpath.length() - 1]){
+    if(support_compat_dir && '/' != strpath[strpath.length() - 1] && string::npos == strpath.find("_$folder$", 0) && is_need_check_obj_detail(*pheader)){
       // check a case of that "object" does not have attribute and "object" is possible to be directory.
-      if(is_need_check_obj_detail(*pheader)){
-        if(-ENOTEMPTY == directory_empty(strpath.c_str())){
-          strpath += "/";
-          forcedir = true;
-          if(pisforce){
-            (*pisforce) = true;
-          }
-          result = 0;
-        }
+      if(-ENOTEMPTY == directory_empty(strpath.c_str())){
+        // found "no dir object".
+        strpath  += "/";
+        *pisforce = true;
+        result    = 0;
       }
     }
   }
@@ -2800,7 +2803,7 @@ static char* get_object_name(xmlDocPtr doc, xmlNodePtr node, const char* path)
   string   strmybpath = mybasename(string((char*)fullpath));
   const char* dirpath = strdirpath.c_str();
   const char* mybname = strmybpath.c_str();
-  const char* basepath= (!path || '\0' == path[0] || '/' != path[0] ? path : &path[1]);
+  const char* basepath= (path && '/' == path[0]) ? &path[1] : path;
   xmlFree(fullpath);
 
   if(!mybname || '\0' == mybname[0]){
@@ -3415,9 +3418,7 @@ static void* s3fs_init(struct fuse_conn_info* conn)
   }
 
   // Check Bucket
-  // If the network is up, check for valid credentials and if the bucket
-  // exists. skip check if mounting a public bucket
-  if(!S3fsCurl::IsPublicBucket()){
+  {
     int result;
     if(EXIT_SUCCESS != (result = s3fs_check_service())){
       s3fs_exit_fuseloop(result);
@@ -3803,25 +3804,21 @@ static int s3fs_check_service(void)
     // check errors(after retrying)
     if(0 > res && responseCode != 200 && responseCode != 301){
       if(responseCode == 400){
-        S3FS_PRN_CRIT("Bad Request - result of checking service.");
-        return EXIT_FAILURE;
-      }
-      if(responseCode == 403){
-        S3FS_PRN_CRIT("invalid credentials - result of checking service.");
-        return EXIT_FAILURE;
-      }
-      if(responseCode == 404){
-        S3FS_PRN_CRIT("bucket not found - result of checking service.");
-        return EXIT_FAILURE;
-      }
-      // unable to connect
-      if(responseCode == CURLE_OPERATION_TIMEDOUT){
-        S3FS_PRN_CRIT("unable to connect bucket and timeout - result of checking service.");
-        return EXIT_FAILURE;
-      }
+        S3FS_PRN_CRIT("Bad Request(host=%s) - result of checking service.", host.c_str());
 
-      // another error
-      S3FS_PRN_CRIT("unable to connect - result of checking service.");
+      }else if(responseCode == 403){
+        S3FS_PRN_CRIT("invalid credentials(host=%s) - result of checking service.", host.c_str());
+
+      }else if(responseCode == 404){
+        S3FS_PRN_CRIT("bucket not found(host=%s) - result of checking service.", host.c_str());
+
+      }else if(responseCode == CURLE_OPERATION_TIMEDOUT){
+        // unable to connect
+        S3FS_PRN_CRIT("unable to connect bucket and timeout(host=%s) - result of checking service.", host.c_str());
+      }else{
+        // another error
+        S3FS_PRN_CRIT("unable to connect(host=%s) - result of checking service.", host.c_str());
+      }
       return EXIT_FAILURE;
     }
   }
@@ -4219,6 +4216,10 @@ static int set_bucket(const char* arg)
 {
   char *bucket_name = (char*)arg;
   if(strstr(arg, ":")){
+    if(strstr(arg, "://")){
+      S3FS_PRN_EXIT("bucket name and path(\"%s\") is wrong, it must be \"bucket[:/path]\".", arg);
+      return -1;
+    }
     bucket = strtok(bucket_name, ":");
     char* pmount_prefix = strtok(NULL, ":");
     if(pmount_prefix){
@@ -4351,10 +4352,11 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
       return 0;
     }
     if(0 == STR2NCMP(arg, "use_cache=")){
-      if(!FdManager::SetCacheDir(strchr(arg, '=') + sizeof(char))){
-        S3FS_PRN_EXIT("cache directory(%s) is specified, but it does not exist or is not directory.", strchr(arg, '=') + sizeof(char));
-        return -1;
-      }
+      FdManager::SetCacheDir(strchr(arg, '=') + sizeof(char));
+      return 0;
+    }
+    if(0 == STR2NCMP(arg, "check_cache_dir_exist")){
+      FdManager::SetCheckCacheDirExist(true);
       return 0;
     }
     if(0 == strcmp(arg, "del_cache")){
@@ -4544,6 +4546,11 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
       off_t pubbucket = s3fs_strtoofft(strchr(arg, '=') + sizeof(char));
       if(1 == pubbucket){
         S3fsCurl::SetPublicBucket(true);
+        // [NOTE]
+        // if bucket is public(without credential), s3 do not allow copy api.
+        // so s3fs sets nocopyapi mode.
+        //
+        nocopyapi = true;
       }else if(0 == pubbucket){
         S3fsCurl::SetPublicBucket(false);
       }else{
@@ -4589,6 +4596,13 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
     if(0 == STR2NCMP(arg, "stat_cache_expire=")){
       time_t expr_time = static_cast<time_t>(s3fs_strtoofft(strchr(arg, '=') + sizeof(char)));
       StatCache::getStatCacheData()->SetExpireTime(expr_time);
+      return 0;
+    }
+    // [NOTE]
+    // This option is for compatibility old version.
+    if(0 == STR2NCMP(arg, "stat_cache_interval_expire=")){
+      time_t expr_time = static_cast<time_t>(s3fs_strtoofft(strchr(arg, '=') + sizeof(char)));
+      StatCache::getStatCacheData()->SetExpireTime(expr_time, true);
       return 0;
     }
     if(0 == strcmp(arg, "enable_noobj_cache")){
@@ -4660,6 +4674,14 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
       norenameapi = true;
       return 0;
     }
+    if(0 == strcmp(arg, "complement_stat")){
+      complement_stat = true;
+      return 0;
+    }
+    if(0 == strcmp(arg, "notsup_compat_dir")){
+      support_compat_dir = false;
+      return 0;
+    }
     if(0 == strcmp(arg, "enable_content_md5")){
       S3fsCurl::SetContentMd5(true);
       return 0;
@@ -4712,6 +4734,10 @@ static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_ar
         S3FS_PRN_EXIT("option use_xattr has unknown parameter(%s).", strflag);
         return -1;
       }
+      return 0;
+    }
+    if(0 == STR2NCMP(arg, "cipher_suites=")){
+      cipher_suites = strchr(arg, '=') + sizeof(char);
       return 0;
     }
     //
@@ -4915,7 +4941,7 @@ int main(int argc, char* argv[])
   }
 
   // check cache dir permission
-  if(!FdManager::CheckCacheTopDir() || !CacheFileStat::CheckCacheFileStatTopDir()){
+  if(!FdManager::CheckCacheDirExist() || !FdManager::CheckCacheTopDir() || !CacheFileStat::CheckCacheFileStatTopDir()){
     S3FS_PRN_EXIT("could not allow cache directory permission, check permission of cache directories.");
     exit(EXIT_FAILURE);
   }
@@ -4995,11 +5021,6 @@ int main(int argc, char* argv[])
     s3fs_oper.getxattr    = s3fs_getxattr;
     s3fs_oper.listxattr   = s3fs_listxattr;
     s3fs_oper.removexattr = s3fs_removexattr;
-  }
-
-  if(!s3fs_init_global_ssl()){
-    S3FS_PRN_EXIT("could not initialize for ssl libraries.");
-    exit(EXIT_FAILURE);
   }
 
   // set signal handler for debugging
